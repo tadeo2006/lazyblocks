@@ -38,20 +38,6 @@ type Backup struct {
 	Interval int `yaml:"interval"`
 }
 
-// LoadConfig reads the YAML file and returns the structured configuration.
-func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("error reading config file: %w", err)
-	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("error parsing yaml: %w", err)
-	}
-
-	return &cfg, nil
-}
 
 // SaveConfig writes the structured configuration back to the YAML file.
 func SaveConfig(path string, cfg *Config) error {

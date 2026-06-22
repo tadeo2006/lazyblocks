@@ -23,6 +23,7 @@ type App struct {
 	gui           *gocui.Gui
 	cfg           *config.Config
 	dockerAdapter *docker.Adapter
+	configPath    string
 	instance      config.Instance
 	status        string
 	logReader     io.ReadCloser
@@ -31,7 +32,7 @@ type App struct {
 	currentFileDir string
 }
 
-func NewApp(cfg *config.Config, adapter *docker.Adapter) (*App, error) {
+func NewApp(cfg *config.Config, cfgPath string, adapter *docker.Adapter) (*App, error) {
 	g, err := gocui.NewGui(gocui.NewGuiOpts{
 		OutputMode:      gocui.Output256,
 		SupportOverlaps: true,
@@ -43,6 +44,7 @@ func NewApp(cfg *config.Config, adapter *docker.Adapter) (*App, error) {
 	app := &App{
 		gui:           g,
 		cfg:           cfg,
+		configPath:    cfgPath,
 		dockerAdapter: adapter,
 		status:        "Unknown",
 	}
@@ -471,7 +473,7 @@ func (app *App) executeAction(g *gocui.Gui, v *gocui.View) error {
 			}
 			if idx != -1 {
 				app.cfg.Instances[idx].Memory = val
-				config.SaveConfig("configs/local.example.yaml", app.cfg)
+				config.SaveConfig(app.configPath, app.cfg)
 				app.instance.Memory = val
 				mainView, _ := g.View("main")
 				fmt.Fprintf(mainView, "\n[SYSTEM] Applying new RAM configuration: %s...\n", val)
@@ -554,7 +556,7 @@ func (app *App) processCreateInstance(name, ram, mrpackPath string) {
 		Backup: config.Backup{Keep: 5},
 	}
 	app.cfg.Instances = append(app.cfg.Instances, newInstance)
-	err := config.SaveConfig("configs/local.example.yaml", app.cfg)
+	err := config.SaveConfig(app.configPath, app.cfg)
 
 	app.gui.Update(func(g *gocui.Gui) error {
 		app.isCreating = false
@@ -902,7 +904,7 @@ func (app *App) showRamPrompt(g *gocui.Gui) {
 					break
 				}
 			}
-			config.SaveConfig("configs/local.example.yaml", app.cfg)
+			config.SaveConfig(app.configPath, app.cfg)
 
 			mainView, _ := g.View("main")
 			fmt.Fprintf(mainView, "\n[SYSTEM] Applying new RAM configuration: %s...\n", newRam)
@@ -1164,7 +1166,7 @@ func (app *App) deleteCurrentInstance(g *gocui.Gui) {
 	if idx != -1 {
 		app.cfg.Instances = append(app.cfg.Instances[:idx], app.cfg.Instances[idx+1:]...)
 	}
-	config.SaveConfig("configs/local.example.yaml", app.cfg)
+	config.SaveConfig(app.configPath, app.cfg)
 	
 	if len(app.cfg.Instances) > 0 {
 		app.instance = app.cfg.Instances[0]
@@ -1539,7 +1541,7 @@ func (app *App) showInstanceActionPrompt(g *gocui.Gui, inst config.Instance) {
 					}
 					if idx != -1 {
 						app.cfg.Instances[idx].Memory = val
-						config.SaveConfig("configs/local.example.yaml", app.cfg)
+						config.SaveConfig(app.configPath, app.cfg)
 						if app.instance.ID == inst.ID {
 							app.instance.Memory = val
 						}
@@ -1945,7 +1947,7 @@ func (app *App) drawScheduleTab(g *gocui.Gui) {
 					break
 				}
 			}
-			config.SaveConfig("configs/local.example.yaml", app.cfg)
+			config.SaveConfig(app.configPath, app.cfg)
 			app.drawScheduleTab(g)
 			
 			exe, _ := os.Executable()

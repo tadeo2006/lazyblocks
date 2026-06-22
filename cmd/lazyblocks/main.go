@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -16,18 +18,45 @@ import (
 )
 
 func main() {
-	// Si el usuario pasa un comando CLI explícito, usamos la lógica anterior
-	if len(os.Args) > 1 {
-		runCLI(os.Args[1])
+	configPathFlag := flag.String("config", "", "Explicit path to configuration file")
+	forceFlag := flag.Bool("force", false, "Force overwrite (used with init)")
+	flag.Parse()
+
+	args := flag.Args()
+	if len(args) > 0 {
+		command := args[0]
+		switch command {
+		case "init":
+			path, err := config.InitConfig(*forceFlag)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error initializing config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Configuration created at:\n%s\n\nEdit this file and then run:\nlazyblocks\n", path)
+			return
+		case "config":
+			if len(args) > 1 && args[1] == "path" {
+				resolvedPath, err := config.ResolveConfigPath(*configPathFlag)
+				if err != nil {
+					if errors.Is(err, config.ErrConfigNotFound) {
+						fmt.Println("No active configuration found.")
+						os.Exit(1)
+					}
+					fmt.Fprintf(os.Stderr, "Error resolving config path: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Println(resolvedPath)
+				return
+			}
+		}
+		
+		cfg, _ := loadConfigOrDie(*configPathFlag)
+		runCLI(args[0], cfg)
 		return
 	}
 
-	// Por defecto, arrancamos la TUI
-	cfg, err := config.LoadConfig("configs/local.example.yaml")
-	if err != nil {
-		log.Fatalf("Error loading configuration: %v", err)
-	}
-
+	// Default TUI mode
+	cfg, resolvedPath := loadConfigOrDie(*configPathFlag)
 
 	dockerAdapter, err := docker.NewAdapter()
 	if err != nil {
@@ -35,8 +64,7 @@ func main() {
 	}
 	defer dockerAdapter.Close()
 
-	// Iniciar gocui App
-	app, err := ui.NewApp(cfg, dockerAdapter)
+	app, err := ui.NewApp(cfg, resolvedPath, dockerAdapter)
 	if err != nil {
 		log.Fatalf("Error initializing UI: %v", err)
 	}
@@ -46,19 +74,27 @@ func main() {
 	}
 }
 
-// runCLI mantiene la lógica de pruebas por comandos que hicimos en las Fases 1 y 2
-func runCLI(command string) {
-	cfg, err := config.LoadConfig("configs/local.example.yaml")
+func loadConfigOrDie(flagPath string) (*config.Config, string) {
+	cfg, resolvedPath, err := config.Load(flagPath)
 	if err != nil {
-		log.Fatalf("Error loading configuration: %v", err)
+		if errors.Is(err, config.ErrConfigNotFound) {
+			fmt.Fprintln(os.Stderr, "No LazyBlocks configuration was found.\n\nCreate one with:\n  lazyblocks init\n\nOr provide one explicitly:\n  lazyblocks --config /path/to/config.yaml")
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
+		os.Exit(1)
 	}
+	return cfg, resolvedPath
+}
+
+func runCLI(command string, cfg *config.Config) {
 	if len(cfg.Instances) == 0 {
 		log.Fatalf("No instances defined for CLI")
 	}
 	instance := cfg.Instances[0]
 
 	if command == "rcon" {
-		rconCmd := strings.Join(os.Args[2:], " ")
+		rconCmd := strings.Join(flag.Args()[1:], " ")
 		password := os.Getenv(instance.RCON.PasswordEnv)
 		if password == "" {
 			password = "secret-dev-password"
@@ -111,10 +147,10 @@ func runCLI(command string) {
 			}
 		}
 	case "crond":
-		if len(os.Args) < 3 {
+		if len(flag.Args()) < 2 {
 			log.Fatalf("Usage: lazyblocks crond <instance-id>")
 		}
-		instanceID := os.Args[2]
+		instanceID := flag.Args()[1]
 		
 		var targetInstance *config.Instance
 		for _, inst := range cfg.Instances {
@@ -132,7 +168,6 @@ func runCLI(command string) {
 		if err != nil {
 			log.Fatalf("crond backup error: %v", err)
 		}
-		// TODO: Implementar limitación de backups (targetInstance.Backup.Keep)
 		fmt.Println("=> Backup completed successfully")
 	}
 }

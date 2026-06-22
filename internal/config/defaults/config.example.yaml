@@ -1,0 +1,22 @@
+# LazyBlocks Configuration Template
+# This file defines the Minecraft servers managed by LazyBlocks.
+
+instances:
+  - id: server_1
+    name: "My First Server"
+    type: paper
+    container_name: lazyblocks-server-1
+    memory: "2G"
+    rcon:
+      enabled: true
+      host: 127.0.0.1
+      port: 25575
+      # Environment variable from which the RCON password will be read.
+      # Ensure you set this environment variable for security.
+      password_env: RCON_PASSWORD
+    paths:
+      # Absolute path where server data will be stored.
+      # You should change this to a directory that exists on your system.
+      data_dir: /tmp/lazyblocks_data/server_1
+    backup:
+      keep: 5

@@ -24,7 +24,7 @@
 - Running **Docker Engine** (Instances are automatically encapsulated via docker containers based on itzg/minecraft-server).
 - UNIX or Linux environment with **cron** enabled (for the scheduled backups section).
 
-## Global Installation (Recommended)
+## 📥 Global Installation (Recommended)
 
 You can install LazyBlocks globally so it can be opened from anywhere in your terminal just by typing `lazyblocks`.
 
@@ -33,24 +33,42 @@ go install github.com/tadeo2006/lazyblocks/cmd/lazyblocks@latest
 ```
 
 Ensure your `$(go env GOPATH)/bin` is in your system's `$PATH`.
-Once installed, simply type in your terminal:
+
+### First Run and Configuration
+
+LazyBlocks requires a configuration file to know which servers to manage. When you run it for the first time, it will tell you to initialize your configuration.
+
+Create a default configuration in your system:
+```bash
+lazyblocks init
+```
+
+By default, the configuration is safely stored at:
+- Linux: `~/.config/lazyblocks/config.yaml`
+- macOS: `~/Library/Application Support/lazyblocks/config.yaml`
+- Windows: `%AppData%\lazyblocks\config.yaml`
+
+Once created, edit this file to add your first server (the generated template contains instructions), and then simply run:
 ```bash
 lazyblocks
 ```
 
-## Local Development
+### Advanced Configuration
 
-1. **Clone the project:**
-   ```bash
-   git clone https://github.com/tadeo2006/lazyblocks.git
-   cd lazyblocks
-   ```
+If you want to use a specific configuration file without relying on the default paths, you can use the `--config` flag:
+```bash
+lazyblocks --config ~/servers/paper.yaml
+```
 
-2. **Start the TUI:**
-   Ensure the Docker daemon is alive and run:
-   ```bash
-   go run ./cmd/lazyblocks
-   ```
+Alternatively, you can use the environment variable `LAZYBLOCKS_CONFIG`:
+```bash
+LAZYBLOCKS_CONFIG=~/servers/paper.yaml lazyblocks
+```
+
+If you ever forget which configuration file is currently being loaded, you can check it with:
+```bash
+lazyblocks config path
+```
 
 ## Key Controls (TUI Navigation)
 
