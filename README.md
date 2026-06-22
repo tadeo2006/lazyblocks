@@ -65,5 +65,9 @@ lazyblocks
 LazyBlocks proudly stands on the solid graphical library [jesseduffield/gocui](https://github.com/jesseduffield/gocui) (the same one used by the legendary *lazygit*). 
 The underlying management is orchestrated by asynchronously calling the official Docker SDK for Go, while worlds and master configurations are safely and persistently stored in `~/lazyblocks_data/`.
 
+## Bugs
+This project is currently under development. If you experience any bugs or find that something is not 100% intuitive, I would be grateful if you could report it in the Issues section.
+
 ## License
 This project is Open Source under the MIT License. Feel free to modify, learn, or contribute to make server management a fun, headache-free task.
+
