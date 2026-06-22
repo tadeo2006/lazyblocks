@@ -811,15 +811,22 @@ func (app *App) updateStatusLoop() {
 }
 
 func (app *App) streamLogsLoop() {
+	// Don't try to stream logs if no instance is configured
+	if app.instance.ContainerName == "" {
+		return
+	}
 	reader, err := app.dockerAdapter.StreamLogs(context.Background(), app.instance.ContainerName, "100")
 	if err != nil {
-		errLog := err
-		app.gui.Update(func(g *gocui.Gui) error {
-			if v, err := g.View("main"); err == nil {
-				fmt.Fprintf(v, "Error reading logs: %v\n", errLog)
-			}
-			return nil
-		})
+		// Only report error if a container is actually expected to exist
+		if app.status == "RUNNING" || app.status == "STOPPED" {
+			errLog := err
+			app.gui.Update(func(g *gocui.Gui) error {
+				if v, err := g.View("main"); err == nil {
+					fmt.Fprintf(v, "Error reading logs: %v\n", errLog)
+				}
+				return nil
+			})
+		}
 		return
 	}
 	app.logReader = reader
@@ -1222,8 +1229,8 @@ func (app *App) deleteCurrentInstance(g *gocui.Gui) {
 func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 	maxX, maxY := g.Size()
 	
-	width := 80
-	height := 22
+	width := 82
+	height := 16
 	x0 := (maxX - width) / 2
 	y0 := (maxY - height) / 2
 	
@@ -1232,9 +1239,10 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 	if v, err := g.SetView(vName, x0, y0, x0+width, y0+height, 0); err != nil {
 		if err.Error() != "unknown view" { return }
 		v.Title = " New Instance Wizard "
-		v.Highlight = true
-		v.SelBgColor = gocui.ColorDefault
-		v.SelFgColor = gocui.ColorWhite | gocui.AttrBold
+
+		// Field index: 0=Name, 1=MCVersion, 2=RAM, 3=Modrinth, 4=LocalFile, 5=Confirm, 6=Cancel
+		curField := 0
+		numFields := 7
 		
 		form := &struct{
 			Name string
@@ -1250,21 +1258,25 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 			LocalPack: "",
 		}
 
+		cursor := func(i int) string {
+			if i == curField { return ">" }
+			return " "
+		}
+
 		drawForm := func() {
 			v.Clear()
-			fmt.Fprintln(v, " Configure your new Minecraft server:")
-			fmt.Fprintln(v, " ")
-			fmt.Fprintf(v, " [Name]       %-20s - Name of your instance\n", form.Name)
-			fmt.Fprintf(v, " [MCVersion]  %-20s - Minecraft Version (e.g. 1.20.4)\n", form.MCVersion)
-			fmt.Fprintf(v, " [RAM]        %-20s - Memory allocation (e.g. 2G, 4G)\n", form.Ram)
-			fmt.Fprintln(v, " ")
-			fmt.Fprintln(v, " --- Modpacks (Optional, choose one) ---")
-			fmt.Fprintf(v, " [Modrinth]   %-20s - Project slug (e.g. fabulously-optimized) or URL\n", form.Modrinth)
-			fmt.Fprintf(v, " [Local File] %-20s - Path to an already downloaded .mrpack file\n", form.LocalPack)
-			fmt.Fprintln(v, " ")
-			fmt.Fprintln(v, " ")
-			fmt.Fprintln(v, " [ [V] Confirm and Create ]")
-			fmt.Fprintln(v, " [ [X] Cancel ]")
+			fmt.Fprintln(v, "  Configure your new Minecraft server:")
+			fmt.Fprintln(v, "")
+			fmt.Fprintf(v, " %s [Name]       %-22s  Instance name\n",        cursor(0), form.Name)
+			fmt.Fprintf(v, " %s [MC Version] %-22s  Game version (e.g. 1.20.4)\n", cursor(1), form.MCVersion)
+			fmt.Fprintf(v, " %s [RAM]        %-22s  Memory (e.g. 2G, 4G)\n",       cursor(2), form.Ram)
+			fmt.Fprintln(v, "")
+			fmt.Fprintln(v, "  Modpack (optional, choose one):")
+			fmt.Fprintf(v, " %s [Modrinth]   %-22s  Slug or modrinth.com URL\n",    cursor(3), form.Modrinth)
+			fmt.Fprintf(v, " %s [Local File] %-22s  Browse .mrpack file\n",         cursor(4), form.LocalPack)
+			fmt.Fprintln(v, "")
+			fmt.Fprintf(v, " %s [ Confirm and Create ]\n", cursor(5))
+			fmt.Fprintf(v, " %s [ Cancel ]\n",             cursor(6))
 		}
 		drawForm()
 		
@@ -1276,29 +1288,48 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 			return nil
 		})
 
+		g.SetKeybinding(vName, gocui.KeyArrowDown, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+			if curField < numFields-1 { curField++ }
+			drawForm()
+			return nil
+		})
+		g.SetKeybinding(vName, gocui.KeyArrowUp, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+			if curField > 0 { curField-- }
+			drawForm()
+			return nil
+		})
+		g.SetKeybinding(vName, 'j', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+			if curField < numFields-1 { curField++ }
+			drawForm()
+			return nil
+		})
+		g.SetKeybinding(vName, 'k', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+			if curField > 0 { curField-- }
+			drawForm()
+			return nil
+		})
+
 		g.SetKeybinding(vName, gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-			_, cy := v.Cursor()
-			
-			switch cy {
-			case 2: // Nombre
+			switch curField {
+			case 0:
 				app.showFormInput(g, "Instance Name", form.Name, vName, func(val string) { form.Name = val; drawForm() })
-			case 3: // MCVersion
+			case 1:
 				app.showFormInput(g, "Minecraft Version", form.MCVersion, vName, func(val string) { form.MCVersion = val; drawForm() })
-			case 4: // RAM
+			case 2:
 				app.showRamSelector(g, vName, func(val string) { form.Ram = val; drawForm() })
-			case 7: // Modrinth
-				app.showFormInput(g, "Modrinth Slug or URL", form.Modrinth, vName, func(val string) { 
+			case 3:
+				app.showFormInput(g, "Modrinth Slug or URL", form.Modrinth, vName, func(val string) {
 					form.Modrinth = val
-					form.LocalPack = "" // Clear local pack if using modrinth
-					drawForm() 
+					form.LocalPack = ""
+					drawForm()
 				})
-			case 8: // Local File
-				app.showFileExplorer(g, "", vName, func(val string) { 
+			case 4:
+				app.showFileExplorer(g, "", vName, func(val string) {
 					form.LocalPack = val
-					form.Modrinth = "" // Clear modrinth if using local pack
-					drawForm() 
+					form.Modrinth = ""
+					drawForm()
 				})
-			case 11: // Confirmar
+			case 5: // Confirm
 				g.DeleteView(vName)
 				app.isCreating = true
 				if mainView, err := g.View("main"); err == nil {
@@ -1306,25 +1337,17 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 				}
 				g.SetCurrentView("main")
 				app.updateHighlights(g)
-				
 				mrpackPath := form.Modrinth
 				if form.LocalPack != "" {
 					mrpackPath = form.LocalPack
 				}
 				go app.processCreateInstance(form.Name, form.MCVersion, form.Ram, mrpackPath)
-			case 12: // Cancelar
+			case 6: // Cancel
 				g.DeleteView(vName)
 				g.SetCurrentView("instances")
 			}
 			return nil
 		})
-
-		g.SetKeybinding(vName, gocui.KeyArrowDown, gocui.ModNone, app.cursorDown)
-		g.SetKeybinding(vName, gocui.KeyArrowUp, gocui.ModNone, app.cursorUp)
-		g.SetKeybinding(vName, 'j', gocui.ModNone, app.cursorDown)
-		g.SetKeybinding(vName, 'k', gocui.ModNone, app.cursorUp)
-		
-		v.SetCursor(0, 2)
 	}
 }
 
