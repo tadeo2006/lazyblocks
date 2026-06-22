@@ -199,11 +199,15 @@ func (app *App) layout(g *gocui.Gui) error {
 	// Redraw help bar every layout call so the pause indicator updates
 	if v, err := g.View("help"); err == nil {
 		v.Clear()
-		pauseLabel := "[F1] Follow"
-		if !app.logPaused {
-			pauseLabel = "[F1] Pause "
+		if app.currentTab == 1 {
+			fmt.Fprintf(v, " <tab> Panels | <j/k> Navigate | <enter> Execute | <k> Kick | <b> Ban | <o> OP | <w> Whitelist | <r> Remove")
+		} else {
+			pauseLabel := "[F1] Follow"
+			if !app.logPaused {
+				pauseLabel = "[F1] Pause "
+			}
+			fmt.Fprintf(v, " <q> Quit | <tab> Panels | <F1> %s | <F2> Command | <j/k> Scroll | <esc> Back", pauseLabel)
 		}
-		fmt.Fprintf(v, " <q> Quit | <tab> Panels | <F1> %s | <F2> Command | <j/k> Scroll | <esc> Back", pauseLabel)
 	}
 
 	if len(app.cfg.Instances) == 0 && !app.isCreating && !app.formOpen {
@@ -2241,16 +2245,6 @@ func (app *App) drawPlayersTab(g *gocui.Gui) {
 			fmt.Fprintf(v, "%s%s[Whitelist] %s%s\n", cursor, colorStart, item.Name, colorEnd)
 		}
 	}
-
-	fmt.Fprintln(v, "  ------------------------------------------------")
-	fmt.Fprintln(v, "  \033[1;36mKeyboard Shortcuts:\033[0m")
-	fmt.Fprintln(v, "  - \033[1mArrow Up/Down or j/k\033[0m: Navigate menu")
-	fmt.Fprintln(v, "  - \033[1mEnter\033[0m: Execute selected option / Action")
-	fmt.Fprintln(v, "  - \033[1mk\033[0m: Kick selected online player")
-	fmt.Fprintln(v, "  - \033[1mb\033[0m: Ban selected player")
-	fmt.Fprintln(v, "  - \033[1mo\033[0m: Toggle OP status of selected online player")
-	fmt.Fprintln(v, "  - \033[1mw\033[0m: Add selected online player to whitelist")
-	fmt.Fprintln(v, "  - \033[1mr\033[0m: Remove selected whitelisted player")
 }
 
 func (app *App) playersCursorDown(g *gocui.Gui, v *gocui.View) error {
