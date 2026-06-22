@@ -29,6 +29,8 @@ type App struct {
 	logReader     io.ReadCloser
 	isCreating    bool
 	formOpen      bool
+	spinnerFrame  int
+	spinnerMsg    string
 	currentTab    int
 	currentFileDir string
 }
@@ -72,6 +74,7 @@ func (app *App) Run() error {
 
 	go app.updateStatusLoop()
 	go app.streamLogsLoop()
+	go app.spinnerLoop()
 
 	return app.gui.MainLoop()
 }
@@ -259,15 +262,41 @@ func (app *App) drawMenu(v *gocui.View) {
 	fmt.Fprintln(v, " [+] Server Configuration")
 }
 
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func (app *App) spinnerLoop() {
+	for {
+		time.Sleep(100 * time.Millisecond)
+		if app.isCreating {
+			app.spinnerFrame = (app.spinnerFrame + 1) % len(spinnerFrames)
+			app.gui.Update(func(g *gocui.Gui) error {
+				if v, err := g.View("status"); err == nil {
+					app.drawStatus(v)
+				}
+				return nil
+			})
+		}
+	}
+}
+
 func (app *App) drawStatus(v *gocui.View) {
 	v.Clear()
-	fmt.Fprintf(v, "Nombre: %s\n", app.instance.Name)
+	if app.isCreating {
+		frame := spinnerFrames[app.spinnerFrame%len(spinnerFrames)]
+		msg := app.spinnerMsg
+		if msg == "" { msg = "Setting up instance..." }
+		fmt.Fprintf(v, "Instance: %s\n", app.instance.Name)
+		fmt.Fprintf(v, "%s Creating... \033[33m%s\033[0m\n", frame, msg)
+		fmt.Fprintf(v, "RCON: %s:%d\n", app.instance.RCON.Host, app.instance.RCON.Port)
+		return
+	}
+	fmt.Fprintf(v, "Instance: %s\n", app.instance.Name)
 	color := "\033[32m" // Green
 	if app.status != "running" {
 		color = "\033[31m" // Red
 	}
-	fmt.Fprintf(v, "Status: %s%s\033[0m\n", color, app.status)
-	fmt.Fprintf(v, "RCON: %s:%d\n", app.instance.RCON.Host, app.instance.RCON.Port)
+	fmt.Fprintf(v, "Status:   %s%s\033[0m\n", color, app.status)
+	fmt.Fprintf(v, "RCON:     %s:%d\n", app.instance.RCON.Host, app.instance.RCON.Port)
 }
 
 func (app *App) keybindings() error {
@@ -463,14 +492,19 @@ func (app *App) executeAction(g *gocui.Gui, v *gocui.View) error {
 	switch cy {
 	case 0: // Start
 		fmt.Fprintln(mainView, "\n[ACTION] Preparing container to start...")
+		app.isCreating = true
+		app.spinnerMsg = "Pulling Docker image..."
 		go func() {
 			err := app.dockerAdapter.CreateAndStart(ctx, app.instance, func(msg string) {
 				app.gui.Update(func(g *gocui.Gui) error {
+					app.spinnerMsg = msg
 					fmt.Fprintf(mainView, "[DOCKER] %s\n", msg)
 					return nil
 				})
 			})
 			app.gui.Update(func(g *gocui.Gui) error {
+				app.isCreating = false
+				app.spinnerMsg = ""
 				if err != nil {
 					fmt.Fprintf(mainView, "[ERROR] Failed to start server: %v\n", err)
 				} else {
@@ -544,7 +578,7 @@ func (app *App) processCreateInstance(name, mcVersion, ram, mrpackPath string) {
 	mainView, _ := app.gui.View("main")
 
 	if mrpackPath != "" {
-		fmt.Fprintf(mainView, "[MRPACK] Resolving modpack %s...\n", mrpackPath)
+		fmt.Fprintf(mainView, "[MRPACK] Resolving modpack: %s\n", mrpackPath)
 		localPath, err := modrinth.ResolveModpackPath(mrpackPath, os.TempDir())
 		if err != nil {
 			app.gui.Update(func(g *gocui.Gui) error {
@@ -555,10 +589,11 @@ func (app *App) processCreateInstance(name, mcVersion, ram, mrpackPath string) {
 			return
 		}
 
-		fmt.Fprintf(mainView, "[MRPACK] Reading modpack %s...\n", localPath)
+		fmt.Fprintf(mainView, "[MRPACK] Installing modpack from: %s\n", localPath)
 		info, err := modrinth.InstallMrPack(localPath, dataDir, func(file string, current int, total int) {
 			app.gui.Update(func(g *gocui.Gui) error {
-				fmt.Fprintf(mainView, "\r[MRPACK] Downloading mod %d/%d: %s", current, total, file)
+				app.spinnerMsg = fmt.Sprintf("Mod %d/%d", current, total)
+				fmt.Fprintf(mainView, "[MRPACK] Downloading mod %d/%d: %s\n", current, total, file)
 				return nil
 			})
 		})
@@ -573,7 +608,7 @@ func (app *App) processCreateInstance(name, mcVersion, ram, mrpackPath string) {
 		}
 
 		app.gui.Update(func(g *gocui.Gui) error {
-			fmt.Fprintf(mainView, "\n[MRPACK] Modpack extracted! Type: %s, MC: %s\n", info.Type, info.MCVersion)
+			fmt.Fprintf(mainView, "[MRPACK] Modpack installed! Server type: %s, MC version: %s\n", info.Type, info.MCVersion)
 			return nil
 		})
 		mcType = info.Type
@@ -607,10 +642,11 @@ func (app *App) processCreateInstance(name, mcVersion, ram, mrpackPath string) {
 
 	app.gui.Update(func(g *gocui.Gui) error {
 		app.isCreating = false
+		app.spinnerMsg = ""
 		if err != nil {
-			fmt.Fprintf(mainView, "[ERROR] %v\n", err)
+			fmt.Fprintf(mainView, "[ERROR] Failed to save instance: %v\n", err)
 		} else {
-			fmt.Fprintf(mainView, "[SUCCESS] Instancia '%s' creada y guardada.\n", name)
+			fmt.Fprintf(mainView, "[SUCCESS] Instance '%s' created and saved.\n", name)
 			
 			if len(app.cfg.Instances) == 1 {
 				app.instance = app.cfg.Instances[0]

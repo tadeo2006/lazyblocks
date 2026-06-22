@@ -1,9 +1,10 @@
 package docker
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -15,9 +16,17 @@ import (
 	"github.com/tadeo2006/lazyblocks/internal/config"
 )
 
+// pullEvent is a JSON event line from the Docker image pull stream
+type pullEvent struct {
+	Status   string `json:"status"`
+	Progress string `json:"progress"`
+	ID       string `json:"id"`
+	Error    string `json:"error"`
+}
+
 // CreateAndStart creates the container if it doesn't exist, and starts it.
 func (a *Adapter) CreateAndStart(ctx context.Context, inst config.Instance, cb func(string)) error {
-	// Verificar si ya existe
+	// Check if container already exists
 	_, err := a.cli.ContainerInspect(ctx, inst.ContainerName)
 	if err == nil {
 		if cb != nil {
@@ -27,16 +36,50 @@ func (a *Adapter) CreateAndStart(ctx context.Context, inst config.Instance, cb f
 	}
 
 	if cb != nil {
-		cb("La imagen 'itzg/minecraft-server' no está verificada o necesita actualizarse. Descargando (esto puede tardar unos minutos)...")
+		cb("Pulling Docker image 'itzg/minecraft-server:latest'...")
+		cb("This may take a few minutes on the first run.")
 	}
 
 	reader, err := a.cli.ImagePull(ctx, "docker.io/itzg/minecraft-server:latest", image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("error downloading image: %w", err)
 	}
-	// Consumir el stream para esperar a que termine
-	io.Copy(io.Discard, reader)
-	reader.Close()
+	defer reader.Close()
+
+	// Parse the JSON progress stream and forward progress to the callback
+	scanner := bufio.NewScanner(reader)
+	layerStatus := map[string]string{} // track per-layer status
+
+	for scanner.Scan() {
+		var evt pullEvent
+		if err := json.Unmarshal(scanner.Bytes(), &evt); err != nil {
+			continue
+		}
+		if evt.Error != "" {
+			return fmt.Errorf("docker pull error: %s", evt.Error)
+		}
+		if cb == nil {
+			continue
+		}
+
+		if evt.ID != "" && evt.Status != "" {
+			// Deduplicate: only emit when the status changes for a layer
+			key := evt.ID
+			label := evt.Status
+			if evt.Progress != "" {
+				label = evt.Status + " " + evt.Progress
+			}
+			if layerStatus[key] != label {
+				layerStatus[key] = label
+				// Filter noisy "Waiting" / "Already exists" lines
+				if !strings.HasPrefix(evt.Status, "Waiting") {
+					cb(fmt.Sprintf("[PULL] Layer %s: %s", evt.ID, label))
+				}
+			}
+		} else if evt.Status != "" {
+			cb(fmt.Sprintf("[PULL] %s", evt.Status))
+		}
+	}
 
 	if cb != nil {
 		cb("Image ready. Configuring ports, volumes, and environment variables...")
@@ -46,17 +89,15 @@ func (a *Adapter) CreateAndStart(ctx context.Context, inst config.Instance, cb f
 	mcPort := nat.Port("25565/tcp")
 
 	portMap := nat.PortMap{}
-	
-	// Configuramos RCON mapping
+
+	// Map RCON port
 	if inst.RCON.Enabled {
 		portMap[rconPort] = []nat.PortBinding{
 			{HostIP: "0.0.0.0", HostPort: fmt.Sprintf("%d", inst.RCON.Port)},
 		}
 	}
-	
-	// Asumimos puerto de MC derivado del puerto RCON o fijo
-	// En un escenario real, la configuración tendría un puerto de MC. Por ahora mapeamos el estándar.
-	// Si inst.RCON.Port es 25575, el MC es 25565. Si RCON es 25576, MC es 25566.
+
+	// Derive Minecraft port from RCON port (RCON=25575 -> MC=25565, etc.)
 	mcHostPort := inst.RCON.Port - 10
 	portMap[mcPort] = []nat.PortBinding{
 		{HostIP: "0.0.0.0", HostPort: fmt.Sprintf("%d", mcHostPort)},
@@ -67,6 +108,10 @@ func (a *Adapter) CreateAndStart(ctx context.Context, inst config.Instance, cb f
 		"TYPE=" + strings.ToUpper(inst.Type),
 		"ENABLE_RCON=true",
 		"RCON_PORT=25575",
+	}
+
+	if inst.MCVersion != "" && inst.MCVersion != "latest" {
+		env = append(env, "VERSION="+inst.MCVersion)
 	}
 
 	password := os.Getenv(inst.RCON.PasswordEnv)
@@ -103,7 +148,7 @@ func (a *Adapter) CreateAndStart(ctx context.Context, inst config.Instance, cb f
 	}
 
 	if cb != nil {
-		cb(fmt.Sprintf("Container '%s' created successfully. Starting...", resp.ID[:12]))
+		cb(fmt.Sprintf("Container '%s' created. Starting server...", resp.ID[:12]))
 	}
 
 	return a.Start(ctx, resp.ID)
