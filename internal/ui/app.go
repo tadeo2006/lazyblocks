@@ -176,6 +176,20 @@ func (app *App) layout(g *gocui.Gui) error {
 	app.drawTabBar(g)
 	app.updateTabContent(g)
 	app.updateHighlights(g)
+
+	// Guarantee that active modals are always visible above tab content
+	if current := g.CurrentView(); current != nil {
+		name := current.Name()
+		baseViews := map[string]bool{
+			"status": true, "menu": true, "instances": true, "tab_bar": true, "help": true,
+			"main": true, "tab_players": true, "tab_schedule": true, "tab_files": true, "tab_config": true,
+			"instance_details": true,
+		}
+		if !baseViews[name] {
+			g.SetViewOnTop(name)
+		}
+	}
+
 	return nil
 }
 
