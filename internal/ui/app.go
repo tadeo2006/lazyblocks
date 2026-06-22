@@ -57,7 +57,6 @@ func NewApp(cfg *config.Config, cfgPath string, adapter *docker.Adapter) (*App, 
 	g.SelFgColor = gocui.ColorGreen
 
 	g.SetManagerFunc(app.layout)
-	g.Mouse = true
 	g.InputEsc = true
 
 	if err := app.keybindings(); err != nil {
@@ -414,9 +413,9 @@ func (app *App) executeInstanceAction(g *gocui.Gui, v *gocui.View) error {
 	_, cy := v.Cursor()
 	if cy < len(app.cfg.Instances) {
 		app.showInstanceActionPrompt(g, app.cfg.Instances[cy])
-	} else if cy == len(app.cfg.Instances)+1 {
+	} else if cy == len(app.cfg.Instances)+1 { // [+] Create Instance
 		app.showCreateInstanceForm(g)
-	} else if cy == len(app.cfg.Instances)+2 {
+	} else if cy == len(app.cfg.Instances)+2 { // [-] Delete Instance
 		app.deleteCurrentInstance(g)
 	}
 	return nil
@@ -1506,6 +1505,11 @@ func (app *App) showInstanceActionPrompt(g *gocui.Gui, inst config.Instance) {
 			g.SetCurrentView("instances")
 			return nil
 		})
+
+		g.SetKeybinding("instance_action", gocui.KeyArrowDown, gocui.ModNone, app.cursorDown)
+		g.SetKeybinding("instance_action", gocui.KeyArrowUp, gocui.ModNone, app.cursorUp)
+		g.SetKeybinding("instance_action", 'j', gocui.ModNone, app.cursorDown)
+		g.SetKeybinding("instance_action", 'k', gocui.ModNone, app.cursorUp)
 
 		g.SetKeybinding("instance_action", gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
 			_, cy := v.Cursor()
