@@ -72,6 +72,13 @@ func ResolveModpackPath(input string, tempDir string) (string, error) {
 	}
 
 	url := input
+	
+	// Si es una URL de la página de Modrinth (ej: https://modrinth.com/modpack/slug), extraer el slug
+	if strings.HasPrefix(input, "http://modrinth.com/modpack/") || strings.HasPrefix(input, "https://modrinth.com/modpack/") {
+		parts := strings.Split(input, "/")
+		input = parts[len(parts)-1]
+	}
+
 	if !strings.HasPrefix(input, "http://") && !strings.HasPrefix(input, "https://") {
 		// Asumimos que es un slug de Modrinth
 		var err error

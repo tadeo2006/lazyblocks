@@ -1227,7 +1227,9 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 	x0 := (maxX - width) / 2
 	y0 := (maxY - height) / 2
 	
-	if v, err := g.SetView("create_form", x0, y0, x0+width, y0+height, 0); err != nil {
+	vName := fmt.Sprintf("create_form_%d", time.Now().UnixNano())
+	
+	if v, err := g.SetView(vName, x0, y0, x0+width, y0+height, 0); err != nil {
 		if err.Error() != "unknown view" { return }
 		v.Title = " New Instance Wizard "
 		v.Highlight = true
@@ -1266,39 +1268,42 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 		}
 		drawForm()
 		
-		g.SetCurrentView("create_form")
+		g.SetCurrentView(vName)
 
-		g.SetKeybinding("create_form", gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-			g.DeleteView("create_form")
+		g.SetKeybinding(vName, gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+			g.DeleteView(vName)
 			g.SetCurrentView("instances")
 			return nil
 		})
 
-		g.SetKeybinding("create_form", gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		g.SetKeybinding(vName, gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
 			_, cy := v.Cursor()
 			
 			switch cy {
 			case 2: // Nombre
-				app.showFormInput(g, "Instance Name", form.Name, "create_form", func(val string) { form.Name = val; drawForm() })
+				app.showFormInput(g, "Instance Name", form.Name, vName, func(val string) { form.Name = val; drawForm() })
 			case 3: // MCVersion
-				app.showFormInput(g, "Minecraft Version", form.MCVersion, "create_form", func(val string) { form.MCVersion = val; drawForm() })
+				app.showFormInput(g, "Minecraft Version", form.MCVersion, vName, func(val string) { form.MCVersion = val; drawForm() })
 			case 4: // RAM
-				app.showRamSelector(g, "create_form", func(val string) { form.Ram = val; drawForm() })
+				app.showRamSelector(g, vName, func(val string) { form.Ram = val; drawForm() })
 			case 7: // Modrinth
-				app.showFormInput(g, "Modrinth Slug or URL", form.Modrinth, "create_form", func(val string) { 
+				app.showFormInput(g, "Modrinth Slug or URL", form.Modrinth, vName, func(val string) { 
 					form.Modrinth = val
 					form.LocalPack = "" // Clear local pack if using modrinth
 					drawForm() 
 				})
 			case 8: // Local File
-				app.showFileExplorer(g, "", "create_form", func(val string) { 
+				app.showFileExplorer(g, "", vName, func(val string) { 
 					form.LocalPack = val
 					form.Modrinth = "" // Clear modrinth if using local pack
 					drawForm() 
 				})
 			case 11: // Confirmar
-				g.DeleteView("create_form")
+				g.DeleteView(vName)
 				app.isCreating = true
+				if mainView, err := g.View("main"); err == nil {
+					mainView.Clear()
+				}
 				g.SetCurrentView("main")
 				app.updateHighlights(g)
 				
@@ -1308,16 +1313,16 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 				}
 				go app.processCreateInstance(form.Name, form.MCVersion, form.Ram, mrpackPath)
 			case 12: // Cancelar
-				g.DeleteView("create_form")
+				g.DeleteView(vName)
 				g.SetCurrentView("instances")
 			}
 			return nil
 		})
 
-		g.SetKeybinding("create_form", gocui.KeyArrowDown, gocui.ModNone, app.cursorDown)
-		g.SetKeybinding("create_form", gocui.KeyArrowUp, gocui.ModNone, app.cursorUp)
-		g.SetKeybinding("create_form", 'j', gocui.ModNone, app.cursorDown)
-		g.SetKeybinding("create_form", 'k', gocui.ModNone, app.cursorUp)
+		g.SetKeybinding(vName, gocui.KeyArrowDown, gocui.ModNone, app.cursorDown)
+		g.SetKeybinding(vName, gocui.KeyArrowUp, gocui.ModNone, app.cursorUp)
+		g.SetKeybinding(vName, 'j', gocui.ModNone, app.cursorDown)
+		g.SetKeybinding(vName, 'k', gocui.ModNone, app.cursorUp)
 		
 		v.SetCursor(0, 2)
 	}
