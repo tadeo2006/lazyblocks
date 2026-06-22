@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -31,6 +32,8 @@ type App struct {
 	formOpen      bool
 	spinnerFrame  int
 	spinnerMsg    string
+	logPaused     bool
+	hostIP        string
 	currentTab    int
 	currentFileDir string
 }
@@ -44,12 +47,16 @@ func NewApp(cfg *config.Config, cfgPath string, adapter *docker.Adapter) (*App, 
 		return nil, err
 	}
 	
+	// Detect host IP (Tailscale or any routable interface)
+	hostIP := detectHostIP()
+	
 	app := &App{
 		gui:           g,
 		cfg:           cfg,
 		configPath:    cfgPath,
 		dockerAdapter: adapter,
 		status:        "Unknown",
+		hostIP:        hostIP,
 	}
 	if len(cfg.Instances) > 0 {
 		app.instance = cfg.Instances[0]
@@ -67,6 +74,31 @@ func NewApp(cfg *config.Config, cfgPath string, adapter *docker.Adapter) (*App, 
 	}
 
 	return app, nil
+}
+
+// detectHostIP returns the best non-loopback IP, prioritising Tailscale (100.x.x.x)
+func detectHostIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	fallback := "127.0.0.1"
+	for _, a := range addrs {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok || ipNet.IP.IsLoopback() {
+			continue
+		}
+		ip := ipNet.IP.To4()
+		if ip == nil {
+			continue
+		}
+		// Prioritise Tailscale range 100.64/10
+		if ip[0] == 100 {
+			return ip.String()
+		}
+		fallback = ip.String()
+	}
+	return fallback
 }
 
 func (app *App) Run() error {
@@ -114,12 +146,20 @@ func (app *App) layout(g *gocui.Gui) error {
 	}
 
 	
-	// Right: Logs and Tabs
-	if v, err := g.SetView("main", 46, 0, maxX-1, maxY-2, 0); err != nil {
+	// Right: Logs and Tabs (leave 3 rows at bottom for cmd bar + help)
+	if v, err := g.SetView("main", 46, 0, maxX-1, maxY-5, 0); err != nil {
 		if err.Error() != "unknown view" { return err }
 		v.Autoscroll = true
 		v.Wrap = true
 		go app.streamLogsLoop()
+	}
+
+	// Persistent command input bar
+	if v, err := g.SetView("cmd_input", 46, maxY-5, maxX-1, maxY-3, 0); err != nil {
+		if err.Error() != "unknown view" { return err }
+		v.Title = " > Send Command (RCON) "
+		v.Editable = true
+		v.Wrap = false
 	}
 
 	// Tab Bar Overlay
@@ -130,13 +170,21 @@ func (app *App) layout(g *gocui.Gui) error {
 	}
 
 
-	// Bottom-bar: Ayuda y controles
+	// Bottom help bar — no background color to avoid white bar
 	if v, err := g.SetView("help", -1, maxY-2, maxX, maxY, 0); err != nil {
 		if err.Error() != "unknown view" { return err }
 		v.Frame = false
-		v.BgColor = gocui.ColorWhite
-		v.FgColor = gocui.ColorBlack
-		fmt.Fprint(v, " <q> Quit   |   <tab> Switch Panel   |   <enter> Select / Focus Logs   |   <esc> Back / Unfocus Logs")
+		v.BgColor = gocui.ColorDefault
+		v.FgColor = gocui.ColorDefault
+	}
+	// Redraw help bar every layout call so the pause indicator updates
+	if v, err := g.View("help"); err == nil {
+		v.Clear()
+		pauseLabel := "[F1] Follow"
+		if !app.logPaused {
+			pauseLabel = "[F1] Pause "
+		}
+		fmt.Fprintf(v, " <q> Quit | <tab> Panels | <F1> %s | <F2> Command | <j/k> Scroll | <esc> Back", pauseLabel)
 	}
 
 	if len(app.cfg.Instances) == 0 && !app.isCreating && !app.formOpen {
@@ -287,7 +335,7 @@ func (app *App) drawStatus(v *gocui.View) {
 		if msg == "" { msg = "Setting up instance..." }
 		fmt.Fprintf(v, "Instance: %s\n", app.instance.Name)
 		fmt.Fprintf(v, "%s Creating... \033[33m%s\033[0m\n", frame, msg)
-		fmt.Fprintf(v, "RCON: %s:%d\n", app.instance.RCON.Host, app.instance.RCON.Port)
+		fmt.Fprintf(v, "IP:       %s\n", app.hostIP)
 		return
 	}
 	fmt.Fprintf(v, "Instance: %s\n", app.instance.Name)
@@ -296,7 +344,7 @@ func (app *App) drawStatus(v *gocui.View) {
 		color = "\033[31m" // Red
 	}
 	fmt.Fprintf(v, "Status:   %s%s\033[0m\n", color, app.status)
-	fmt.Fprintf(v, "RCON:     %s:%d\n", app.instance.RCON.Host, app.instance.RCON.Port)
+	fmt.Fprintf(v, "IP:       %s   RCON: :%d\n", app.hostIP, app.instance.RCON.Port)
 }
 
 func (app *App) keybindings() error {
@@ -381,6 +429,41 @@ func (app *App) keybindings() error {
 		v.SetOrigin(ox, oy+1)
 		return nil
 	}); err != nil { return err }
+
+	// F1: toggle log pause/follow
+	togglePause := func(g *gocui.Gui, v *gocui.View) error {
+		app.logPaused = !app.logPaused
+		if mainV, err := g.View("main"); err == nil {
+			mainV.Autoscroll = !app.logPaused
+		}
+		return nil
+	}
+	g.SetKeybinding("", gocui.KeyF1, gocui.ModNone, togglePause)
+
+	// F2: focus command input bar
+	g.SetKeybinding("", gocui.KeyF2, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		g.SetCurrentView("cmd_input")
+		app.updateHighlights(g)
+		return nil
+	})
+
+	// cmd_input: Enter sends the RCON command, Esc goes back to menu
+	g.SetKeybinding("cmd_input", gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		cmdStr := strings.TrimSpace(v.Buffer())
+		v.Clear()
+		v.SetCursor(0, 0)
+		g.SetCurrentView("menu")
+		app.updateHighlights(g)
+		if cmdStr != "" {
+			app.runRcon(cmdStr)
+		}
+		return nil
+	})
+	g.SetKeybinding("cmd_input", gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		g.SetCurrentView("menu")
+		app.updateHighlights(g)
+		return nil
+	})
 
 	return nil
 }
@@ -795,29 +878,9 @@ func (app *App) showImportPrompt(g *gocui.Gui) {
 }
 
 func (app *App) showRconPrompt(g *gocui.Gui) {
-	maxX, maxY := g.Size()
-	if v, err := g.SetView("rcon", maxX/2-30, maxY/2-1, maxX/2+30, maxY/2+1, 0); err != nil {
-		if err.Error() != "unknown view" { return }
-		v.Title = " Comando RCON (Enter para enviar, Esc para cancelar) "
-		v.Editable = true
-		g.SetCurrentView("rcon")
-
-		g.SetKeybinding("rcon", gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-			g.DeleteView("rcon")
-			g.SetCurrentView("menu")
-			return nil
-		})
-
-		g.SetKeybinding("rcon", gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-			cmdStr := strings.TrimSpace(v.Buffer())
-			g.DeleteView("rcon")
-			g.SetCurrentView("menu")
-			if cmdStr != "" {
-				app.runRcon(cmdStr)
-			}
-			return nil
-		})
-	}
+	// Focus the persistent cmd_input bar instead of a modal
+	g.SetCurrentView("cmd_input")
+	app.updateHighlights(g)
 }
 
 func (app *App) runRcon(cmdStr string) {
@@ -850,13 +913,19 @@ func (app *App) runRcon(cmdStr string) {
 }
 
 func (app *App) updateStatus() {
-	status, err := app.dockerAdapter.GetStatus(context.Background(), app.instance.ContainerName)
-	if err == nil {
-		app.gui.Update(func(g *gocui.Gui) error {
-			app.status = status
-			return nil
-		})
+	if app.instance.ContainerName == "" {
+		return
 	}
+	status, err := app.dockerAdapter.GetStatus(context.Background(), app.instance.ContainerName)
+	app.gui.Update(func(g *gocui.Gui) error {
+		if err == nil {
+			app.status = status
+		}
+		if v, err := g.View("status"); err == nil {
+			app.drawStatus(v)
+		}
+		return nil
+	})
 }
 
 func (app *App) updateStatusLoop() {
