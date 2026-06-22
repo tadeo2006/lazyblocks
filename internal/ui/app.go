@@ -28,6 +28,7 @@ type App struct {
 	status        string
 	logReader     io.ReadCloser
 	isCreating    bool
+	formOpen      bool
 	currentTab    int
 	currentFileDir string
 }
@@ -115,7 +116,6 @@ func (app *App) layout(g *gocui.Gui) error {
 		if err.Error() != "unknown view" { return err }
 		v.Autoscroll = true
 		v.Wrap = true
-		fmt.Fprintln(v, "Waiting for server logs...")
 		go app.streamLogsLoop()
 	}
 
@@ -136,40 +136,60 @@ func (app *App) layout(g *gocui.Gui) error {
 		fmt.Fprint(v, " <q> Quit   |   <tab> Switch Panel   |   <enter> Select / Focus Logs   |   <esc> Back / Unfocus Logs")
 	}
 
-	if len(app.cfg.Instances) == 0 && !app.isCreating {
-		if _, err := g.View("create_form"); err != nil {
-			if v, err := g.SetView("welcome", maxX/2-30, maxY/2-4, maxX/2+30, maxY/2+4, 0); err != nil {
-				if err.Error() != "unknown view" { return err }
-				v.Title = " Welcome to Lazyblocks! "
-				v.Highlight = true
-				v.SelBgColor = gocui.ColorDefault
-				v.SelFgColor = gocui.ColorWhite | gocui.AttrBold
+	if len(app.cfg.Instances) == 0 && !app.isCreating && !app.formOpen {
+		if v, err := g.SetView("welcome", maxX/2-30, maxY/2-4, maxX/2+30, maxY/2+5, 0); err != nil {
+			if err.Error() != "unknown view" { return err }
+			v.Title = " Welcome to LazyBlocks "
 
-				fmt.Fprintln(v, " ")
-				fmt.Fprintln(v, " You have no Minecraft instances created.")
-				fmt.Fprintln(v, " ")
-				fmt.Fprintln(v, " [ Create my first instance ]")
-				fmt.Fprintln(v, " [ Quit ]")
-				
-				g.SetCurrentView("welcome")
+			wField := 0 // 0=Create, 1=Quit
 
-				g.SetKeybinding("welcome", gocui.KeyArrowDown, gocui.ModNone, app.cursorDown)
-				g.SetKeybinding("welcome", gocui.KeyArrowUp, gocui.ModNone, app.cursorUp)
-				g.SetKeybinding("welcome", 'j', gocui.ModNone, app.cursorDown)
-				g.SetKeybinding("welcome", 'k', gocui.ModNone, app.cursorUp)
-				
-				g.SetKeybinding("welcome", gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-					_, cy := v.Cursor()
-					if cy == 3 {
-						g.DeleteView("welcome")
-						app.showCreateInstanceForm(g)
-					} else if cy == 4 {
-						return gocui.ErrQuit
-					}
-					return nil
-				})
-				v.SetCursor(0, 3)
+			wCursor := func(i int) string {
+				if i == wField { return ">" }
+				return " "
 			}
+
+			drawWelcome := func() {
+				v.Clear()
+				fmt.Fprintln(v, "")
+				fmt.Fprintln(v, "  You have no Minecraft instances yet.")
+				fmt.Fprintln(v, "  Use the form below to create your first server.")
+				fmt.Fprintln(v, "")
+				fmt.Fprintf(v, " %s [ Create my first instance ]\n", wCursor(0))
+				fmt.Fprintf(v, " %s [ Quit ]\n",                    wCursor(1))
+			}
+			drawWelcome()
+			g.SetCurrentView("welcome")
+
+			g.SetKeybinding("welcome", gocui.KeyArrowDown, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+				if wField < 1 { wField++ }
+				drawWelcome()
+				return nil
+			})
+			g.SetKeybinding("welcome", gocui.KeyArrowUp, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+				if wField > 0 { wField-- }
+				drawWelcome()
+				return nil
+			})
+			g.SetKeybinding("welcome", 'j', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+				if wField < 1 { wField++ }
+				drawWelcome()
+				return nil
+			})
+			g.SetKeybinding("welcome", 'k', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+				if wField > 0 { wField-- }
+				drawWelcome()
+				return nil
+			})
+			g.SetKeybinding("welcome", gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+				if wField == 0 {
+					g.DeleteView("welcome")
+					app.formOpen = true
+					app.showCreateInstanceForm(g)
+				} else {
+					return gocui.ErrQuit
+				}
+				return nil
+			})
 		}
 	}
 
@@ -1284,6 +1304,7 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 
 		g.SetKeybinding(vName, gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
 			g.DeleteView(vName)
+			app.formOpen = false
 			g.SetCurrentView("instances")
 			return nil
 		})
@@ -1331,6 +1352,7 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 				})
 			case 5: // Confirm
 				g.DeleteView(vName)
+				app.formOpen = false
 				app.isCreating = true
 				if mainView, err := g.View("main"); err == nil {
 					mainView.Clear()
@@ -1344,6 +1366,7 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 				go app.processCreateInstance(form.Name, form.MCVersion, form.Ram, mrpackPath)
 			case 6: // Cancel
 				g.DeleteView(vName)
+				app.formOpen = false
 				g.SetCurrentView("instances")
 			}
 			return nil
