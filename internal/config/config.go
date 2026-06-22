@@ -15,6 +15,7 @@ type Instance struct {
 	ID            string `yaml:"id"`
 	Name          string `yaml:"name"`
 	Type          string `yaml:"type"`
+	MCVersion     string `yaml:"mc_version,omitempty"`
 	ContainerName string `yaml:"container_name"`
 	Memory        string `yaml:"memory,omitempty"`
 	RCON          RCON   `yaml:"rcon"`

@@ -29,6 +29,78 @@ type MrPackInfo struct {
 	LoaderVersion string
 }
 
+// FetchModrinthModpackURL fetches the latest .mrpack URL for a given project slug or ID
+func FetchModrinthModpackURL(slug string) (string, error) {
+	url := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version", slug)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("modrinth API devolvió: %s", resp.Status)
+	}
+
+	var versions VersionResult
+	if err := json.NewDecoder(resp.Body).Decode(&versions); err != nil {
+		return "", err
+	}
+
+	if len(versions) == 0 || len(versions[0].Files) == 0 {
+		return "", fmt.Errorf("no se encontraron archivos para este proyecto")
+	}
+
+	for _, f := range versions[0].Files {
+		if strings.HasSuffix(f.Filename, ".mrpack") {
+			return f.URL, nil
+		}
+	}
+	
+	// Fallback to the first file if no .mrpack suffix
+	return versions[0].Files[0].URL, nil
+}
+
+// ResolveModpackPath downloads the modpack if it's a URL or Slug, returning a local path
+func ResolveModpackPath(input string, tempDir string) (string, error) {
+	if input == "" {
+		return "", nil
+	}
+	
+	if _, err := os.Stat(input); err == nil {
+		return input, nil // Es un archivo local
+	}
+
+	url := input
+	if !strings.HasPrefix(input, "http://") && !strings.HasPrefix(input, "https://") {
+		// Asumimos que es un slug de Modrinth
+		var err error
+		url, err = FetchModrinthModpackURL(input)
+		if err != nil {
+			return "", fmt.Errorf("no se pudo resolver el slug de Modrinth: %w", err)
+		}
+	}
+
+	dest := filepath.Join(tempDir, "temp_modpack.mrpack")
+	out, err := os.Create(dest)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return "", err
+	}
+
+	return dest, nil
+}
+
 // InstallMrPack extracts overrides and concurrently downloads mods from a .mrpack
 func InstallMrPack(mrpackPath string, destDir string, progressCb func(string, int, int)) (*MrPackInfo, error) {
 	r, err := zip.OpenReader(mrpackPath)

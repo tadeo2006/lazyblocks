@@ -514,17 +514,29 @@ func (app *App) executeAction(g *gocui.Gui, v *gocui.View) error {
 }
 
 
-func (app *App) processCreateInstance(name, ram, mrpackPath string) {
+func (app *App) processCreateInstance(name, mcVersion, ram, mrpackPath string) {
 	id := strings.ToLower(strings.ReplaceAll(name, " ", "-"))
 	dataDir := filepath.Join(os.Getenv("HOME"), "lazyblocks_data", id)
 	os.MkdirAll(dataDir, os.ModePerm)
 
 	mcType := "paper"
+	finalVersion := mcVersion
 	mainView, _ := app.gui.View("main")
 
 	if mrpackPath != "" {
-		fmt.Fprintf(mainView, "[MRPACK] Reading modpack %s...\n", mrpackPath)
-		info, err := modrinth.InstallMrPack(mrpackPath, dataDir, func(file string, current int, total int) {
+		fmt.Fprintf(mainView, "[MRPACK] Resolving modpack %s...\n", mrpackPath)
+		localPath, err := modrinth.ResolveModpackPath(mrpackPath, os.TempDir())
+		if err != nil {
+			app.gui.Update(func(g *gocui.Gui) error {
+				app.isCreating = false
+				fmt.Fprintf(mainView, "\n[ERROR] Failed to resolve modpack: %v\n", err)
+				return nil
+			})
+			return
+		}
+
+		fmt.Fprintf(mainView, "[MRPACK] Reading modpack %s...\n", localPath)
+		info, err := modrinth.InstallMrPack(localPath, dataDir, func(file string, current int, total int) {
 			app.gui.Update(func(g *gocui.Gui) error {
 				fmt.Fprintf(mainView, "\r[MRPACK] Downloading mod %d/%d: %s", current, total, file)
 				return nil
@@ -545,6 +557,7 @@ func (app *App) processCreateInstance(name, ram, mrpackPath string) {
 			return nil
 		})
 		mcType = info.Type
+		finalVersion = info.MCVersion
 	}
 
 	if ram == "" {
@@ -555,6 +568,7 @@ func (app *App) processCreateInstance(name, ram, mrpackPath string) {
 		ID:            id,
 		Name:          name,
 		Type:          mcType,
+		MCVersion:     finalVersion,
 		Memory:        ram,
 		ContainerName: "mc-" + id,
 		RCON: config.RCON{
@@ -1217,10 +1231,12 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 		
 		form := &struct{
 			Name string
+			MCVersion string
 			Ram string
 			Mrpack string
 		}{
 			Name: "New Server",
+			MCVersion: "1.20.4",
 			Ram: "2G",
 			Mrpack: "",
 		}
@@ -1229,9 +1245,10 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 			v.Clear()
 			fmt.Fprintln(v, " Configure your new Minecraft server:")
 			fmt.Fprintln(v, " ")
-			fmt.Fprintf(v, " [Name]    %s\n", form.Name)
-			fmt.Fprintf(v, " [RAM]     %s\n", form.Ram)
-			fmt.Fprintf(v, " [MrPack]  %s\n", form.Mrpack)
+			fmt.Fprintf(v, " [Name]       %s\n", form.Name)
+			fmt.Fprintf(v, " [MCVersion]  %s\n", form.MCVersion)
+			fmt.Fprintf(v, " [RAM]        %s\n", form.Ram)
+			fmt.Fprintf(v, " [MrPack]     %s\n", form.Mrpack)
 			fmt.Fprintln(v, " ")
 			fmt.Fprintln(v, " [ [V] Confirm and Create ]")
 			fmt.Fprintln(v, " [ [X] Cancel ]")
@@ -1252,17 +1269,19 @@ func (app *App) showCreateInstanceForm(g *gocui.Gui) {
 			switch cy {
 			case 2: // Nombre
 				app.showFormInput(g, "Name", form.Name, "create_form", func(val string) { form.Name = val; drawForm() })
-			case 3: // RAM
+			case 3: // MCVersion
+				app.showFormInput(g, "MCVersion", form.MCVersion, "create_form", func(val string) { form.MCVersion = val; drawForm() })
+			case 4: // RAM
 				app.showRamSelector(g, "create_form", func(val string) { form.Ram = val; drawForm() })
-			case 4: // MrPack
-				app.showFileExplorer(g, "", "create_form", func(val string) { form.Mrpack = val; drawForm() })
-			case 6: // Confirmar
+			case 5: // MrPack
+				app.showFormInput(g, "Modpack URL / Slug (opt)", form.Mrpack, "create_form", func(val string) { form.Mrpack = val; drawForm() })
+			case 7: // Confirmar
 				g.DeleteView("create_form")
 				app.isCreating = true
 				g.SetCurrentView("main")
 				app.updateHighlights(g)
-				go app.processCreateInstance(form.Name, form.Ram, form.Mrpack)
-			case 7: // Cancelar
+				go app.processCreateInstance(form.Name, form.MCVersion, form.Ram, form.Mrpack)
+			case 8: // Cancelar
 				g.DeleteView("create_form")
 				g.SetCurrentView("instances")
 			}
