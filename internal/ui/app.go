@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -20,22 +21,40 @@ import (
 	"github.com/tadeo2006/lazyblocks/internal/infrastructure/storage"
 )
 
+type PlayerMenuType int
+const (
+	PlayerMenuToggleWhitelist PlayerMenuType = iota
+	PlayerMenuAddWhitelist
+	PlayerMenuOnlinePlayer
+	PlayerMenuWhitelistedPlayer
+)
+
+type PlayerMenuItem struct {
+	Type PlayerMenuType
+	Name string
+	IsOp bool
+}
+
 type App struct {
-	gui           *gocui.Gui
-	cfg           *config.Config
-	dockerAdapter *docker.Adapter
-	configPath    string
-	instance      config.Instance
-	status        string
-	logReader     io.ReadCloser
-	isCreating    bool
-	formOpen      bool
-	spinnerFrame  int
-	spinnerMsg    string
-	logPaused     bool
-	hostIP        string
-	currentTab    int
-	currentFileDir string
+	gui             *gocui.Gui
+	cfg             *config.Config
+	dockerAdapter   *docker.Adapter
+	configPath      string
+	instance        config.Instance
+	status          string
+	logReader       io.ReadCloser
+	isCreating      bool
+	formOpen        bool
+	spinnerFrame    int
+	spinnerMsg      string
+	logPaused       bool
+	hostIP          string
+	currentTab      int
+	currentFileDir  string
+	playerMenuItems []PlayerMenuItem
+	playerMenuIdx   int
+	lastPlayerFetch time.Time
+	lastViewName    string
 }
 
 func NewApp(cfg *config.Config, cfgPath string, adapter *docker.Adapter) (*App, error) {
@@ -155,7 +174,7 @@ func (app *App) layout(g *gocui.Gui) error {
 	}
 
 	// Persistent command input bar
-	if v, err := g.SetView("cmd_input", 46, maxY-5, maxX-1, maxY-3, 0); err != nil {
+	if v, err := g.SetView("cmd_input", 46, maxY-5, maxX-1, maxY-2, 0); err != nil {
 		if err.Error() != "unknown view" { return err }
 		v.Title = " > Send Command (RCON) "
 		v.Editable = true
@@ -442,6 +461,9 @@ func (app *App) keybindings() error {
 
 	// F2: focus command input bar
 	g.SetKeybinding("", gocui.KeyF2, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if g.CurrentView() != nil && g.CurrentView().Name() != "cmd_input" {
+			app.lastViewName = g.CurrentView().Name()
+		}
 		g.SetCurrentView("cmd_input")
 		app.updateHighlights(g)
 		return nil
@@ -452,7 +474,12 @@ func (app *App) keybindings() error {
 		cmdStr := strings.TrimSpace(v.Buffer())
 		v.Clear()
 		v.SetCursor(0, 0)
-		g.SetCurrentView("menu")
+		v.SetOrigin(0, 0)
+		target := "menu"
+		if app.lastViewName != "" {
+			target = app.lastViewName
+		}
+		g.SetCurrentView(target)
 		app.updateHighlights(g)
 		if cmdStr != "" {
 			app.runRcon(cmdStr)
@@ -460,7 +487,14 @@ func (app *App) keybindings() error {
 		return nil
 	})
 	g.SetKeybinding("cmd_input", gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		g.SetCurrentView("menu")
+		v.Clear()
+		v.SetCursor(0, 0)
+		v.SetOrigin(0, 0)
+		target := "menu"
+		if app.lastViewName != "" {
+			target = app.lastViewName
+		}
+		g.SetCurrentView(target)
 		app.updateHighlights(g)
 		return nil
 	})
@@ -1854,12 +1888,91 @@ func (app *App) updateTabContent(g *gocui.Gui) {
 	
 	for i, vName := range tabs {
 		if i == 0 { continue }
-		if v, err := g.SetView(vName, 46, 0, maxX-1, maxY-2, 0); err != nil {
+		if v, err := g.SetView(vName, 46, 0, maxX-1, maxY-5, 0); err != nil {
 			if err.Error() != "unknown view" { continue }
 			v.Frame = true
 			v.Wrap = true
 			g.SetKeybinding(vName, gocui.KeyArrowRight, gocui.ModNone, app.nextTab)
 			g.SetKeybinding(vName, gocui.KeyArrowLeft, gocui.ModNone, app.prevTab)
+
+			if vName == "tab_players" {
+				g.SetKeybinding("tab_players", gocui.KeyArrowDown, gocui.ModNone, app.playersCursorDown)
+				g.SetKeybinding("tab_players", gocui.KeyArrowUp, gocui.ModNone, app.playersCursorUp)
+				g.SetKeybinding("tab_players", 'j', gocui.ModNone, app.playersCursorDown)
+				g.SetKeybinding("tab_players", 'k', gocui.ModNone, app.playersCursorUp)
+
+				g.SetKeybinding("tab_players", gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+					if len(app.playerMenuItems) == 0 { return nil }
+					item := app.playerMenuItems[app.playerMenuIdx]
+					switch item.Type {
+					case PlayerMenuToggleWhitelist:
+						enabled := false
+						propsPath := filepath.Join(app.instance.Paths.DataDir, "server.properties")
+						if props, err := storage.LoadProperties(propsPath); err == nil {
+							enabled = props.Get("white-list", "false") == "true"
+						}
+						if enabled {
+							app.executePlayerAction("whitelist off")
+						} else {
+							app.executePlayerAction("whitelist on")
+						}
+					case PlayerMenuAddWhitelist:
+						app.showAddPlayerPrompt(g)
+					case PlayerMenuOnlinePlayer:
+						app.executePlayerAction(fmt.Sprintf("kick %s", item.Name))
+					case PlayerMenuWhitelistedPlayer:
+						app.executePlayerAction(fmt.Sprintf("whitelist remove %s", item.Name))
+					}
+					return nil
+				})
+
+				g.SetKeybinding("tab_players", 'k', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+					if len(app.playerMenuItems) == 0 { return nil }
+					item := app.playerMenuItems[app.playerMenuIdx]
+					if item.Type == PlayerMenuOnlinePlayer {
+						app.executePlayerAction(fmt.Sprintf("kick %s", item.Name))
+					}
+					return nil
+				})
+				g.SetKeybinding("tab_players", 'b', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+					if len(app.playerMenuItems) == 0 { return nil }
+					item := app.playerMenuItems[app.playerMenuIdx]
+					if item.Type == PlayerMenuOnlinePlayer || item.Type == PlayerMenuWhitelistedPlayer {
+						app.executePlayerAction(fmt.Sprintf("ban %s", item.Name))
+					}
+					return nil
+				})
+				g.SetKeybinding("tab_players", 'o', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+					if len(app.playerMenuItems) == 0 { return nil }
+					item := app.playerMenuItems[app.playerMenuIdx]
+					if item.Type == PlayerMenuOnlinePlayer {
+						if item.IsOp {
+							app.executePlayerAction(fmt.Sprintf("deop %s", item.Name))
+						} else {
+							app.executePlayerAction(fmt.Sprintf("op %s", item.Name))
+						}
+					}
+					return nil
+				})
+				g.SetKeybinding("tab_players", 'w', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+					if len(app.playerMenuItems) == 0 { return nil }
+					item := app.playerMenuItems[app.playerMenuIdx]
+					if item.Type == PlayerMenuOnlinePlayer {
+						app.executePlayerAction(fmt.Sprintf("whitelist add %s", item.Name))
+						app.executePlayerAction("whitelist reload")
+					}
+					return nil
+				})
+				g.SetKeybinding("tab_players", 'r', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+					if len(app.playerMenuItems) == 0 { return nil }
+					item := app.playerMenuItems[app.playerMenuIdx]
+					if item.Type == PlayerMenuWhitelistedPlayer {
+						app.executePlayerAction(fmt.Sprintf("whitelist remove %s", item.Name))
+						app.executePlayerAction("whitelist reload")
+					}
+					return nil
+				})
+			}
 		}
 	}
 
@@ -2080,8 +2193,137 @@ func (app *App) drawPlayersTab(g *gocui.Gui) {
 	v.Clear()
 	
 	if app.status == "OFFLINE" {
-		fmt.Fprintln(v, "\n [!] El servidor está apagado.")
+		fmt.Fprintln(v, "\n \033[1;31m[!] El servidor está apagado.\033[0m")
 		fmt.Fprintln(v, " Start the server from 'Server Actions' to manage players.")
+		return
+	}
+
+	if !app.instance.RCON.Enabled {
+		fmt.Fprintln(v, "\n \033[1;31m[!] RCON no está activado para esta instancia.\033[0m")
+		fmt.Fprintln(v, " Activa RCON en server.properties para gestionar jugadores.")
+		return
+	}
+
+	if time.Since(app.lastPlayerFetch) > 3 * time.Second || len(app.playerMenuItems) == 0 {
+		app.refreshPlayerList()
+		app.lastPlayerFetch = time.Now()
+	}
+
+	fmt.Fprintln(v, "\n  \033[1;32m[ PLAYER & WHITELIST MANAGER ]\033[0m")
+	fmt.Fprintln(v, "  ------------------------------------------------")
+
+	if len(app.playerMenuItems) == 0 {
+		fmt.Fprintln(v, "  No se pudieron obtener jugadores.")
+		fmt.Fprintln(v, "  Asegúrate de que RCON esté funcionando y configurado.")
+		return
+	}
+
+	for i, item := range app.playerMenuItems {
+		cursor := "  "
+		colorStart := ""
+		colorEnd := ""
+		if i == app.playerMenuIdx {
+			cursor = "> "
+			colorStart = "\033[1;33m" // Bold Yellow
+			colorEnd = "\033[0m"
+		}
+
+		switch item.Type {
+		case PlayerMenuToggleWhitelist, PlayerMenuAddWhitelist:
+			fmt.Fprintf(v, "%s%s%s%s\n", cursor, colorStart, item.Name, colorEnd)
+		case PlayerMenuOnlinePlayer:
+			opSuffix := ""
+			if item.IsOp {
+				opSuffix = " \033[1;31m[OP]\033[0m"
+			}
+			fmt.Fprintf(v, "%s%s[Online] %s%s%s\n", cursor, colorStart, item.Name, colorEnd, opSuffix)
+		case PlayerMenuWhitelistedPlayer:
+			fmt.Fprintf(v, "%s%s[Whitelist] %s%s\n", cursor, colorStart, item.Name, colorEnd)
+		}
+	}
+
+	fmt.Fprintln(v, "  ------------------------------------------------")
+	fmt.Fprintln(v, "  \033[1;36mKeyboard Shortcuts:\033[0m")
+	fmt.Fprintln(v, "  - \033[1mArrow Up/Down or j/k\033[0m: Navigate menu")
+	fmt.Fprintln(v, "  - \033[1mEnter\033[0m: Execute selected option / Action")
+	fmt.Fprintln(v, "  - \033[1mk\033[0m: Kick selected online player")
+	fmt.Fprintln(v, "  - \033[1mb\033[0m: Ban selected player")
+	fmt.Fprintln(v, "  - \033[1mo\033[0m: Toggle OP status of selected online player")
+	fmt.Fprintln(v, "  - \033[1mw\033[0m: Add selected online player to whitelist")
+	fmt.Fprintln(v, "  - \033[1mr\033[0m: Remove selected whitelisted player")
+}
+
+func (app *App) playersCursorDown(g *gocui.Gui, v *gocui.View) error {
+	if len(app.playerMenuItems) == 0 { return nil }
+	if app.playerMenuIdx < len(app.playerMenuItems)-1 {
+		app.playerMenuIdx++
+		app.drawPlayersTab(g)
+	}
+	return nil
+}
+
+func (app *App) playersCursorUp(g *gocui.Gui, v *gocui.View) error {
+	if len(app.playerMenuItems) == 0 { return nil }
+	if app.playerMenuIdx > 0 {
+		app.playerMenuIdx--
+		app.drawPlayersTab(g)
+	}
+	return nil
+}
+
+func (app *App) runRconSync(cmdStr string) (string, error) {
+	password := os.Getenv(app.instance.RCON.PasswordEnv)
+	if password == "" {
+		password = "secret-dev-password"
+	}
+	host := app.instance.RCON.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	client, err := rcon.Dial(host, app.instance.RCON.Port, password)
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+	return client.Execute(cmdStr)
+}
+
+func (app *App) executePlayerAction(cmdStr string) {
+	go func() {
+		app.gui.Update(func(g *gocui.Gui) error {
+			if v, err := g.View("main"); err == nil {
+				fmt.Fprintf(v, "\n[RCON] > %s\n", cmdStr)
+			}
+			return nil
+		})
+
+		output, err := app.runRconSync(cmdStr)
+
+		app.gui.Update(func(g *gocui.Gui) error {
+			if v, viewErr := g.View("main"); viewErr == nil {
+				if err != nil {
+					fmt.Fprintf(v, "[RCON ERROR] %v\n", err)
+				} else {
+					fmt.Fprintf(v, "[RCON RESP] %s\n", strings.TrimSpace(output))
+				}
+			}
+			app.lastPlayerFetch = time.Time{} // Force refresh
+			app.refreshPlayerList()
+			app.drawPlayersTab(app.gui)
+			return nil
+		})
+	}()
+}
+
+func (app *App) refreshPlayerList() {
+	if app.status == "OFFLINE" {
+		app.playerMenuItems = nil
+		app.playerMenuIdx = 0
+		return
+	}
+	if !app.instance.RCON.Enabled {
+		app.playerMenuItems = nil
+		app.playerMenuIdx = 0
 		return
 	}
 
@@ -2089,37 +2331,133 @@ func (app *App) drawPlayersTab(g *gocui.Gui) {
 	if password == "" {
 		password = "secret-dev-password"
 	}
-	
-	client, err := rcon.Dial("127.0.0.1", app.instance.RCON.Port, password)
+	host := app.instance.RCON.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
+	client, err := rcon.Dial(host, app.instance.RCON.Port, password)
 	if err != nil {
-		fmt.Fprintf(v, "\n [ERROR] Could not connect via RCON.\n Error: %v\n", err)
-		fmt.Fprintln(v, " Si el servidor apenas está arrancando, espera unos segundos.")
+		app.playerMenuItems = nil
+		app.playerMenuIdx = 0
 		return
 	}
 	defer client.Close()
 
-	output, err := client.Execute("list")
-	if err != nil {
-		fmt.Fprintf(v, "\n [ERROR] Failed 'list' command: %v\n", err)
-		return
+	whitelistEnabled := false
+	propsPath := filepath.Join(app.instance.Paths.DataDir, "server.properties")
+	if props, err := storage.LoadProperties(propsPath); err == nil {
+		whitelistEnabled = props.Get("white-list", "false") == "true"
 	}
 
-	fmt.Fprintf(v, "\n  [ Server Report ]\n")
-	fmt.Fprintf(v, "  %s\n", strings.TrimSpace(output))
-	fmt.Fprintln(v, "  ------------------------------------------------")
-	
-	// Very simple parse for common format: "There are X of a max of Y players online: Player1, Player2"
-	parts := strings.SplitN(output, ":", 2)
-	if len(parts) == 2 {
-		names := strings.Split(parts[1], ",")
-		for _, name := range names {
-			cleanName := strings.TrimSpace(name)
-			if cleanName != "" {
-				fmt.Fprintf(v, "  [PLAYER] %s\n", cleanName)
+	var onlinePlayers []string
+	if output, err := client.Execute("list"); err == nil {
+		parts := strings.SplitN(output, ":", 2)
+		if len(parts) == 2 {
+			for _, p := range strings.Split(parts[1], ",") {
+				pClean := strings.TrimSpace(p)
+				if pClean != "" {
+					onlinePlayers = append(onlinePlayers, pClean)
+				}
 			}
 		}
-	} else {
-		fmt.Fprintln(v, "  (No players connected or format could not be read)")
+	}
+
+	var whitelistedPlayers []string
+	if output, err := client.Execute("whitelist list"); err == nil {
+		parts := strings.SplitN(output, ":", 2)
+		if len(parts) == 2 {
+			for _, p := range strings.Split(parts[1], ",") {
+				pClean := strings.TrimSpace(p)
+				if pClean != "" {
+					whitelistedPlayers = append(whitelistedPlayers, pClean)
+				}
+			}
+		}
+	}
+
+	opsPath := filepath.Join(app.instance.Paths.DataDir, "ops.json")
+	opsMap := make(map[string]bool)
+	if opsData, err := os.ReadFile(opsPath); err == nil {
+		type OpEntry struct {
+			Name string `json:"name"`
+		}
+		var opEntries []OpEntry
+		if json.Unmarshal(opsData, &opEntries) == nil {
+			for _, entry := range opEntries {
+				opsMap[strings.ToLower(entry.Name)] = true
+			}
+		}
+	}
+
+	var items []PlayerMenuItem
+	wStatus := "OFF"
+	if whitelistEnabled {
+		wStatus = "ON"
+	}
+	items = append(items, PlayerMenuItem{
+		Type: PlayerMenuToggleWhitelist,
+		Name: fmt.Sprintf("[Toggle Whitelist] (Current: %s)", wStatus),
+	})
+
+	items = append(items, PlayerMenuItem{
+		Type: PlayerMenuAddWhitelist,
+		Name: "[Add Player to Whitelist]",
+	})
+
+	for _, op := range onlinePlayers {
+		isOp := opsMap[strings.ToLower(op)]
+		items = append(items, PlayerMenuItem{
+			Type: PlayerMenuOnlinePlayer,
+			Name: op,
+			IsOp: isOp,
+		})
+	}
+
+	for _, wp := range whitelistedPlayers {
+		items = append(items, PlayerMenuItem{
+			Type: PlayerMenuWhitelistedPlayer,
+			Name: wp,
+		})
+	}
+
+	app.playerMenuItems = items
+	if app.playerMenuIdx >= len(items) {
+		app.playerMenuIdx = len(items) - 1
+	}
+	if app.playerMenuIdx < 0 {
+		app.playerMenuIdx = 0
+	}
+}
+
+func (app *App) showAddPlayerPrompt(g *gocui.Gui) {
+	maxX, maxY := g.Size()
+	if v, err := g.SetView("player_prompt", maxX/2-25, maxY/2-1, maxX/2+25, maxY/2+1, 0); err != nil {
+		if err.Error() != "unknown view" { return }
+		v.Title = " Enter player username to whitelist "
+		v.Editable = true
+		v.Wrap = false
+		g.SetCurrentView("player_prompt")
+		app.updateHighlights(g)
+
+		g.SetKeybinding("player_prompt", gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+			g.DeleteView("player_prompt")
+			g.SetCurrentView("tab_players")
+			app.updateHighlights(g)
+			return nil
+		})
+
+		g.SetKeybinding("player_prompt", gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+			name := strings.TrimSpace(v.Buffer())
+			g.DeleteView("player_prompt")
+			g.SetCurrentView("tab_players")
+			app.updateHighlights(g)
+			
+			if name != "" {
+				app.executePlayerAction(fmt.Sprintf("whitelist add %s", name))
+			}
+			return nil
+		})
 	}
 }
 
