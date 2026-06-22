@@ -18,7 +18,7 @@ go.work
 # User specific configuration
 configs/local.yaml
 configs/local.*.yaml
-!configs/local.example.yaml
+!configs/config.example.yaml
 
 # Data / Modpacks
 /lazyblocks_data/
