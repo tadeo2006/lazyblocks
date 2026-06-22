@@ -1,0 +1,38 @@
+# Binaries
+/lazyblocks
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go
+vendor/
+go.work
+
+# Environment variables
+.env
+
+# User specific configuration
+configs/local.yaml
+configs/local.*.yaml
+!configs/local.example.yaml
+
+# Data / Modpacks
+/lazyblocks_data/
+/data/
+
+# IDEs / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# AI Agents
+AGENT_CONTEXT.md

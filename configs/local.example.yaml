@@ -1,0 +1,15 @@
+instances:
+    - id: hola
+      name: hola
+      type: paper
+      container_name: mc-hola
+      memory: 4G
+      rcon:
+        enabled: true
+        host: 127.0.0.1
+        port: 25575
+        password_env: RCON_PASSWORD
+      paths:
+        data_dir: /home/ema/lazyblocks_data/hola
+      backup:
+        keep: 5
