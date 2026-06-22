@@ -786,9 +786,11 @@ func (app *App) updateStatusLoop() {
 func (app *App) streamLogsLoop() {
 	reader, err := app.dockerAdapter.StreamLogs(context.Background(), app.instance.ContainerName, "100")
 	if err != nil {
+		errLog := err
 		app.gui.Update(func(g *gocui.Gui) error {
-			v, _ := g.View("main")
-			fmt.Fprintf(v, "Error reading logs: %v\n", err)
+			if v, err := g.View("main"); err == nil {
+				fmt.Fprintf(v, "Error reading logs: %v\n", errLog)
+			}
 			return nil
 		})
 		return
@@ -801,8 +803,9 @@ func (app *App) streamLogsLoop() {
 		if n > 0 {
 			chunk := string(buf[:n])
 			app.gui.Update(func(g *gocui.Gui) error {
-				v, _ := g.View("main")
-				fmt.Fprint(v, chunk)
+				if v, err := g.View("main"); err == nil {
+					fmt.Fprint(v, chunk)
+				}
 				return nil
 			})
 		}
